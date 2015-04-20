@@ -34,7 +34,7 @@ type CallStack
     recurred::Bool
     cycleid::Int
     result
-    prev::Union(EmptyCallStack,CallStack)
+    prev::Union{EmptyCallStack,CallStack}
     sv::StaticVarInfo
 
     CallStack(ast, mod, types::ANY, prev) = new(ast, mod, types, false, 0, Bottom, prev)
@@ -126,7 +126,7 @@ t_func[eval(Core.Intrinsics,:ccall)] =
         if isa(t,DataType) && is((t::DataType).name,Ref.name)
             t = t.parameters[1]
             if is(t,Any)
-                return Union() # a return type of Box{Any} is invalid
+                return Union{} # a return type of Box{Any} is invalid
             end
             return t
         end
@@ -139,19 +139,13 @@ t_func[eval(Core.Intrinsics,:cglobal)] =
                           isType(t[1]) ? Ptr{t[1].parameters[1]} : Ptr))
 t_func[eval(Core.Intrinsics,:select_value)] =
     # TODO: return Bottom if cnd is definitely not a Bool
-    (3, 3, (cnd, x, y)->Union(x,y))
+    (3, 3, (cnd, x, y)->Union{x,y})
 t_func[is] = (2, 2, cmp_tfunc)
 t_func[issubtype] = (2, 2, cmp_tfunc)
 t_func[isa] = (2, 2, cmp_tfunc)
 t_func[isdefined] = (1, Inf, (args...)->Bool)
 t_func[Core.sizeof] = (1, 1, x->Int)
 t_func[nfields] = (1, 1, x->Int)
-t_func[Union] = (0, Inf,
-                 (args...)->(if all(isType,args)
-                                 Type{Union(map(t->t.parameters[1],args)...)}
-                             else
-                                 Type
-                             end))
 t_func[_expr] = (1, Inf, (args...)->Expr)
 t_func[method_exists] = (2, 2, cmp_tfunc)
 t_func[applicable] = (1, Inf, (f, args...)->Bool)
@@ -177,8 +171,8 @@ const typeof_tfunc = function (t)
         else
             Type{TypeVar(:_,t)}
         end
-    elseif isa(t,UnionType)
-        Union(map(typeof_tfunc, t.types)...)
+    elseif isa(t,Union)
+        Union{map(typeof_tfunc, t.types)...}
     elseif isa(t,TypeVar)
         Type{t}
     else
@@ -196,12 +190,12 @@ function limit_type_depth(t::ANY, d::Int, cov::Bool, vars)
         return t
     end
     inexact = !cov && d > MAX_TYPE_DEPTH
-    if isa(t,UnionType)
+    if isa(t,Union)
         t === Bottom && return t
         if d > MAX_TYPE_DEPTH
             R = Any
         else
-            R = Union(map(x->limit_type_depth(x, d+1, cov, vars), t.types)...)
+            R = Union{map(x->limit_type_depth(x, d+1, cov, vars), t.types)...}
         end
     elseif isa(t,DataType)
         P = t.parameters
@@ -235,7 +229,7 @@ const getfield_tfunc = function (A, s0, name)
             return Any
         end
     end
-    if isa(s,UnionType)
+    if isa(s,Union)
         return reduce(tmerge, Bottom, map(t->getfield_tfunc(A, t, name), s.types))
     end
     if !isa(s,DataType)
@@ -301,7 +295,7 @@ const getfield_tfunc = function (A, s0, name)
         end
         return s.types[i]
     else
-        return reduce(tmerge, Bottom, map(unwrapva,s.types))#Union(s.types...)
+        return reduce(tmerge, Bottom, map(unwrapva,s.types))#Union{s.types...}
     end
 end
 t_func[getfield] = (2, 2, getfield_tfunc)
@@ -351,20 +345,33 @@ function extract_simple_tparam(Ai)
     return Bottom
 end
 
-# TODO: handle e.g. apply_type(T, R::Union(Type{Int32},Type{Float64}))
+# TODO: handle e.g. apply_type(T, R::Union{Type{Int32},Type{Float64}})
 const apply_type_tfunc = function (A, args...)
     if !isType(args[1])
-        return Type
+        return Any
     end
     headtype = args[1].parameters[1]
-    if isa(headtype,UnionType) || isa(headtype,TypeVar)
+    if isa(headtype,Union) || isa(headtype,TypeVar)
         return args[1]
+    end
+    largs = length(args)
+    if headtype === Union
+        largs == 1 && return Type{Bottom}
+        largs == 2 && return args[2]
+        args = args[2:end]
+        if all(isType, args)
+            return Type{Union{map(t->t.parameters[1],args)...}}
+        else
+            return Any
+        end
+    elseif Union <: headtype
+        return Any
     end
     istuple = (headtype === Tuple)
     uncertain = false
     lA = length(A)
     tparams = svec()
-    for i=2:max(lA,length(args))
+    for i=2:max(lA,largs)
         ai = args[i]
         if isType(ai)
             uncertain |= (!isleaftype(ai))
@@ -530,10 +537,10 @@ const isconstantref = isconstantfunc
 const limit_tuple_depth = t->limit_tuple_depth_(t,0)
 
 const limit_tuple_depth_ = function (t,d::Int)
-    if isa(t,UnionType)
+    if isa(t,Union)
         # also limit within Union types.
         # may have to recur into other stuff in the future too.
-        return Union(map(x->limit_tuple_depth_(x,d+1), t.types)...)
+        return Union{map(x->limit_tuple_depth_(x,d+1), t.types)...}
     end
     if !(isa(t,DataType) && t.name === Tuple.name)
         return t
@@ -1058,7 +1065,7 @@ end
 typealias VarTable ObjectIdDict
 
 type StateUpdate
-    var::Union(Symbol,GenSym)
+    var::Union{Symbol,GenSym}
     vtype
     state::VarTable
 end
@@ -1098,7 +1105,7 @@ function type_too_complex(t::ANY, d)
     if d > MAX_TYPE_DEPTH
         return true
     end
-    if isa(t,UnionType)
+    if isa(t,Union)
         p = t.types
     elseif isa(t,DataType)
         p = t.parameters
@@ -1126,7 +1133,7 @@ function tmerge(typea::ANY, typeb::ANY)
         end
         return Tuple
     end
-    u = Union(typea, typeb)
+    u = Union{typea, typeb}
     if length(u.types) > MAX_TYPEUNION_LEN || type_too_complex(u, 0)
         # don't let type unions get too big
         # TODO: something smarter, like a common supertype
@@ -1137,7 +1144,7 @@ end
 
 issubstate(a::VarState,b::VarState) = (a.typ <: b.typ && a.undef <= b.undef)
 
-function smerge(sa::Union(NotFound,VarState), sb::Union(NotFound,VarState))
+function smerge(sa::Union{NotFound,VarState}, sb::Union{NotFound,VarState})
     is(sa, NF) && return sb
     is(sb, NF) && return sa
     issubstate(sa,sb) && return sb
@@ -1151,7 +1158,7 @@ schanged(n::ANY, o::ANY) = is(o,NF) || (!is(n,NF) && !issubstate(n, o))
 stupdate(state::Tuple{}, changes::VarTable, vars) = copy(changes)
 stupdate(state::Tuple{}, changes::StateUpdate, vars) = stupdate(ObjectIdDict(), changes, vars)
 
-function stupdate(state::ObjectIdDict, changes::Union(StateUpdate,VarTable), vars)
+function stupdate(state::ObjectIdDict, changes::Union{StateUpdate,VarTable}, vars)
     for i = 1:length(vars)
         v = vars[i]
         newtype = changes[v]
@@ -1163,7 +1170,7 @@ function stupdate(state::ObjectIdDict, changes::Union(StateUpdate,VarTable), var
     state
 end
 
-function stchanged(new::Union(StateUpdate,VarTable), old, vars)
+function stchanged(new::Union{StateUpdate,VarTable}, old, vars)
     if is(old,())
         return true
     end
@@ -1649,7 +1656,7 @@ function typeinf_uncached(linfo::LambdaStaticData, atypes::ANY, sparams::SimpleV
     end
     for i = 1:length(gensym_types)
         if gensym_types[i] === NF
-            gensym_types[i] = Union()
+            gensym_types[i] = Union{}
         end
     end
 
@@ -1852,7 +1859,7 @@ end
 
 function sym_replace(e::ANY, from1, from2, to1, to2)
     if isa(e,Symbol) || isa(e,GenSym)
-        return _sym_repl(e::Union(Symbol,GenSym), from1, from2, to1, to2, e)
+        return _sym_repl(e::Union{Symbol,GenSym}, from1, from2, to1, to2, e)
     end
     if isa(e,SymbolNode)
         e2 = _sym_repl(e.name, from1, from2, to1, to2, e)
@@ -1871,12 +1878,12 @@ function sym_replace(e::ANY, from1, from2, to1, to2)
         # on the LHS of assignments, so we make sure not to put
         # something else there
         @assert length(e.args) == 2
-        s = e.args[1]::Union(Symbol,GenSym)
+        s = e.args[1]::Union{Symbol,GenSym}
         e2 = _sym_repl(s, from1, from2, to1, to2, s)
         if isa(e2, SymbolNode)
             e2 = e2.name
         end
-        e.args[1] = e2::Union(Symbol,GenSym)
+        e.args[1] = e2::Union{Symbol,GenSym}
         e.args[2] = sym_replace(e.args[2], from1, from2, to1, to2)
     elseif e.head !== :line
         for i=1:length(e.args)
@@ -1886,7 +1893,7 @@ function sym_replace(e::ANY, from1, from2, to1, to2)
     return e
 end
 
-function _sym_repl(s::Union(Symbol,GenSym), from1, from2, to1, to2, deflt)
+function _sym_repl(s::Union{Symbol,GenSym}, from1, from2, to1, to2, deflt)
     for i=1:length(from1)
         if is(from1[i],s)
             return to1[i]
@@ -1947,7 +1954,7 @@ function resolve_globals(e::ANY, locals, args, from, to, env1, env2)
         # remove_redundant_temp_vars can only handle Symbols
         # on the LHS of assignments, so we make sure not to put
         # something else there
-        e2 = resolve_globals(e.args[1]::Union(Symbol,GenSym), locals, args, from, to, env1, env2)
+        e2 = resolve_globals(e.args[1]::Union{Symbol,GenSym}, locals, args, from, to, env1, env2)
         if isa(e2, GlobalRef)
             # abort when trying to inline a function which assigns to a global
             # variable in a different module, since `Mod.X=V` isn't allowed
@@ -1957,7 +1964,7 @@ function resolve_globals(e::ANY, locals, args, from, to, env1, env2)
 #                resolve_globals(e.args[2], locals, args, from, to, env1, env2))
 #            e.typ = e2.typ
         else
-            e.args[1] = e2::Union(Symbol,GenSym)
+            e.args[1] = e2::Union{Symbol,GenSym}
             e.args[2] = resolve_globals(e.args[2], locals, args, from, to, env1, env2)
         end
     elseif !is(e.head,:line)
@@ -2189,12 +2196,6 @@ function inlineable(f::ANY, e::Expr, atype::ANY, sv::StaticVarInfo, enclosing_as
             (isdefined(Main.Base,:promote_type) && is(f,Main.Base.promote_type))) &&
                 isleaftype(e.typ.parameters[1])
             return (e.typ.parameters[1],())
-        end
-        if is(f,Union)
-            union = e.typ.parameters[1]
-            if isa(union,UnionType) && all(isleaftype, (union::UnionType).types)
-                return (union,())
-            end
         end
     end
     if isa(f,IntrinsicFunction)
@@ -2708,7 +2709,7 @@ function mk_tuplecall(args, sv::StaticVarInfo)
     e
 end
 
-const basenumtype = Union(Int32,Int64,Float32,Float64,Complex64,Complex128,Rational)
+const basenumtype = Union{Int32,Int64,Float32,Float64,Complex64,Complex128,Rational}
 
 function inlining_pass(e::Expr, sv, ast)
     if e.head == :method
@@ -2811,7 +2812,7 @@ function inlining_pass(e::Expr, sv, ast)
             end
 
             if is(f, ^) || is(f, .^)
-                if length(e.args) == 3 && isa(e.args[3],Union(Int32,Int64))
+                if length(e.args) == 3 && isa(e.args[3],Union{Int32,Int64})
                     a1 = e.args[2]
                     if isa(a1,basenumtype) || ((isa(a1,Symbol) || isa(a1,SymbolNode) || isa(a1,GenSym)) &&
                                                exprtype(a1,sv) <: basenumtype)

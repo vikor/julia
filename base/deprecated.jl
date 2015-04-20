@@ -527,3 +527,6 @@ export float32_isvalid, float64_isvalid
 @deprecate parseint(T::Type, s, base) parse(T, s, base)
 
 @deprecate linrange linspace
+
+const UnionType = Union
+export UnionType

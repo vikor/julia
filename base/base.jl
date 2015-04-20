@@ -1,6 +1,9 @@
-typealias Callable Union(Function,DataType)
+# TODO: deprecate
+call(::Type{Union}, args...) = Union{args...}
 
-const Bottom = Union()
+typealias Callable Union{Function,DataType}
+
+const Bottom = Union{}
 
 # constructors for Core types in boot.jl
 call(T::Type{BoundsError}) = Core.call(T)
@@ -160,7 +163,7 @@ const (:) = Colon()
 ==(w::WeakRef, v) = isequal(w.value, v)
 ==(w, v::WeakRef) = isequal(w, v.value)
 
-function finalizer(o::ANY, f::Union(Function,Ptr))
+function finalizer(o::ANY, f::Union{Function,Ptr})
     if isimmutable(o)
         error("objects of type ", typeof(o), " cannot be finalized")
     end
