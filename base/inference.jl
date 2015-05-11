@@ -243,15 +243,15 @@ const getfield_tfunc = function (A, s0, name)
     if !isa(s,DataType)
         return Any, false
     end
-    if is(s.name,NTuple.name)
-        return (name == Symbol ? Bottom : s.parameters[2]), true
-    end
     if s.abstract
         return Any, false
     end
     if s <: Tuple && name === Symbol
         return Bottom, true
     end
+    # if s <: Tuple && s.parameters.length == 1 && isvatuple(s)
+    #     return s.parameters[1].parameters[1], true
+    # end
     if isa(A[2],QuoteNode) && isa(A[2].value,Symbol)
         fld = A[2].value
         A1 = A[1]
