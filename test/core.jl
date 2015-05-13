@@ -155,6 +155,18 @@ let T = TypeVar(:T,Union(Float64,Array{Float64,1}),true)
     testintersect(T,Real,Float64)
 end
 
+# issue #8652
+args_morespecific(a, b) = ccall(:jl_args_morespecific, Cint, (Any,Any), a, b)
+let T1 = TypeVar(:T, Integer, true), T2 = TypeVar(:T, Integer, true)
+    a = Tuple{Type{T1}, Ptr{T1}}
+    b1 = Tuple{Type{T1}, Ptr{Integer}}
+    @test args_morespecific(a, b1) == 0
+    @test args_morespecific(b1, a) == 1
+    b2 = Tuple{Type{T2}, Ptr{Integer}}
+    @test args_morespecific(a, b2) == 0
+    @test args_morespecific(b2, a) == 1
+end
+
 # join
 @test typejoin(Int8,Int16) === Signed
 @test typejoin(Int,AbstractString) === Any
