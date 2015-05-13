@@ -1,6 +1,10 @@
 # This file is a part of Julia. License is MIT: http://julialang.org/license
 
-module Rounding
+baremodule Rounding
+
+importall ..Operators
+import ..convert, ..include, ..Cint
+
 include("fenv_constants.jl")
 
 export

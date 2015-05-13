@@ -82,7 +82,7 @@ function _iisconst(s::Symbol)
     isdefined(m,s) && (ccall(:jl_is_const, Int32, (Any, Any), m, s) != 0)
 end
 _iisconst(s::SymbolNode) = _iisconst(s.name)
-_iisconst(s::TopNode) = isconst(_basemod(), s.name)
+_iisconst(s::TopNode) = isconst(_topmod(), s.name)
 _iisconst(x::Expr) = false
 _iisconst(x::ANY) = true
 
@@ -91,18 +91,16 @@ _ieval(x::ANY) =
           (inference_stack::CallStack).mod, x, C_NULL, 0)
 _iisdefined(x::ANY) = isdefined((inference_stack::CallStack).mod, x)
 
-function _basemod()
+function _topmod()
     m = (inference_stack::CallStack).mod
-    if m === Core || m === Base
-        return m
-    end
-    return Main.Base
+    return ccall(:jl_base_relative_to, Any, (Any,), m)::Module
 end
 
 cmp_tfunc = (x,y)->Bool
 
 isType(t::ANY) = isa(t,DataType) && is((t::DataType).name,Type.name)
 
+const Inf = typemax(Int)
 const t_func = ObjectIdDict()
 t_func[throw] = (1, 1, x->Bottom)
 t_func[box] = (2, 2, (t,v)->(isType(t) ? t.parameters[1] : Any))
@@ -489,7 +487,7 @@ end
 
 function isconstantfunc(f::ANY, sv::StaticVarInfo)
     if isa(f,TopNode)
-        m = _basemod()
+        m = _topmod()
         return isconst(m, f.name) && isdefined(m, f.name) && f
     end
     if isa(f,GlobalRef)
@@ -586,13 +584,13 @@ function abstract_call_gf(f, fargs, argtype, e)
     if length(argtypes)>1 && (argtypes[1] <: Tuple) && argtypes[2]===Int
         # allow tuple indexing functions to take advantage of constant
         # index arguments.
-        if f === Main.Base.getindex
+        if isdefined(Main.Base, :getindex) && f === Main.Base.getindex
             isa(e,Expr) && (e.head = :call1)
             return getfield_tfunc(fargs, argtypes[1], argtypes[2])[1]
-        elseif f === Main.Base.next
+        elseif isdefined(Main.Base, :next) && f === Main.Base.next
             isa(e,Expr) && (e.head = :call1)
             return Tuple{getfield_tfunc(fargs, argtypes[1], argtypes[2])[1], Int}
-        elseif f === Main.Base.indexed_next
+        elseif isdefined(Main.Base, :indexed_next) && f === Main.Base.indexed_next
             isa(e,Expr) && (e.head = :call1)
             return Tuple{getfield_tfunc(fargs, argtypes[1], argtypes[2])[1], Int}
         end
@@ -908,7 +906,7 @@ function abstract_eval(e::ANY, vtypes, sv::StaticVarInfo)
     if isa(e,QuoteNode)
         return typeof((e::QuoteNode).value)
     elseif isa(e,TopNode)
-        return abstract_eval_global(_basemod(), (e::TopNode).name)
+        return abstract_eval_global(_topmod(), (e::TopNode).name)
     elseif isa(e,Symbol)
         return abstract_eval_symbol(e::Symbol, vtypes, sv)
     elseif isa(e,SymbolNode)
@@ -1917,8 +1915,8 @@ function resolve_relative(sym, locals, args, from, to, orig)
         if const_to && is(eval(from,sym), eval(to,sym))
             return orig
         end
-        m = _basemod()
-        if is(from,m) || is(from,Core)
+        m = _topmod()
+        if is(from, m) || is(from, Core)
             return TopNode(sym)
         end
     end
@@ -2003,7 +2001,7 @@ function exprtype(x::ANY, sv::StaticVarInfo)
     elseif isa(x,GenSym)
         return abstract_eval_gensym(x::GenSym, sv)
     elseif isa(x,TopNode)
-        return abstract_eval_global(_basemod(), (x::TopNode).name)
+        return abstract_eval_global(_topmod(), (x::TopNode).name)
     elseif isa(x,Symbol)
         sv = inference_stack.sv
         if is_local(sv, x::Symbol)
@@ -2293,12 +2291,12 @@ function inlineable(f::ANY, e::Expr, atype::ANY, sv::StaticVarInfo, enclosing_as
     body = Expr(:block)
     body.args = without_linenums(ast.args[3].args)::Array{Any,1}
     need_mod_annotate = true
-    cost = 1.0
+    cost::Int = 1000
     if incompletematch
         cost *= 4
     end
     if is(f, next) || is(f, done) || is(f, unsafe_convert) || is(f, cconvert)
-        cost /= 4
+        cost ÷= 4
     end
     inline_op = (f===(+) || f===(*) || f===min || f===max) && (3 <= length(argexprs) <= 9) &&
         meth[3].sig == Tuple{Any,Any,Any,Vararg{Any}}
@@ -2666,17 +2664,18 @@ end
 # doesn't work on Tuples of TypeVars
 const inline_incompletematch_allowed = false
 
-inline_worthy(body, cost::Real) = true
-function inline_worthy(body::Expr, cost::Real=1.0) # precondition: 0<cost
+inline_worthy(body, cost::Integer) = true
+function inline_worthy(body::Expr, cost::Integer=1000) # precondition: 0 < cost; nominal cost = 1000
     if popmeta!(body, :inline)[1]
         return true
     end
     if popmeta!(body, :noinline)[1]
         return false
     end
-    symlim = 1+5/cost
-    if length(body.args) < symlim
+    symlim = 1000 + 5_000_000 ÷ cost
+    if length(body.args) < (symlim + 500) ÷ 1000
         symlim *= 16
+        symlim ÷= 1000
         if occurs_more(body, e->true, symlim) < symlim
             return true
         end
@@ -2712,7 +2711,7 @@ function mk_tuplecall(args, sv::StaticVarInfo)
     e
 end
 
-const basenumtype = Union(Int32,Int64,Float32,Float64,Complex64,Complex128,Rational)
+const corenumtype = Union(Int32,Int64,Float32,Float64)
 
 function inlining_pass(e::Expr, sv, ast)
     if e.head == :method
@@ -2814,9 +2813,11 @@ function inlining_pass(e::Expr, sv, ast)
                 e.args = Any[is_global(sv,:call) ? (:call) : GlobalRef((inference_stack::CallStack).mod, :call), e.args...]
             end
 
-            if is(f, ^) || is(f, .^)
+            if (isdefined(Main.Base,:^) && is(f, Main.Base.(:^))) ||
+               (isdefined(Main.Base,:.^) && is(f, Main.Base.(:.^)))
                 if length(e.args) == 3 && isa(e.args[3],Union(Int32,Int64))
                     a1 = e.args[2]
+                    basenumtype = Union(corenumtype, Base.Complex64, Base.Complex128, Base.Rational)
                     if isa(a1,basenumtype) || ((isa(a1,Symbol) || isa(a1,SymbolNode) || isa(a1,GenSym)) &&
                                                exprtype(a1,sv) <: basenumtype)
                         if e.args[3]==2

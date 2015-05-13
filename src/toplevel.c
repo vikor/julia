@@ -86,11 +86,13 @@ void jl_module_load_time_initialize(jl_module_t *m)
     }
 }
 
+static int in_base_module;
 extern void jl_get_system_hooks(void);
 jl_value_t *jl_eval_module_expr(jl_expr_t *ex)
 {
     static arraylist_t module_stack;
     static int initialized=0;
+    int isbase = 0;
     if (!initialized) {
         arraylist_new(&module_stack, 0);
         initialized = 1;
@@ -129,6 +131,8 @@ jl_value_t *jl_eval_module_expr(jl_expr_t *ex)
         jl_methoderror_type = NULL;
         jl_loaderror_type = NULL;
         jl_current_task->tls = jl_nothing;
+        isbase = 1;
+        in_base_module = 1;
     }
     // export all modules from Main
     if (parent_module == jl_main_module)
@@ -156,11 +160,13 @@ jl_value_t *jl_eval_module_expr(jl_expr_t *ex)
     JL_CATCH {
         jl_current_module = last_module;
         jl_current_task->current_module = task_last_m;
+        if (isbase) in_base_module = 0;
         jl_rethrow();
     }
     JL_GC_POP();
     jl_current_module = last_module;
     jl_current_task->current_module = task_last_m;
+    if (isbase) in_base_module = 0;
 
 #if 0
     // some optional post-processing steps
@@ -203,11 +209,14 @@ static int is_intrinsic(jl_module_t *m, jl_sym_t *s)
 // this is only needed because of the bootstrapping process:
 // - initially Base doesn't exist and top === Core
 // - later, it refers to either old Base or new Base
-jl_module_t *jl_base_relative_to(jl_module_t *m)
+DLLEXPORT jl_module_t *jl_base_relative_to(jl_module_t *m)
 {
-    if (m==jl_core_module || m==jl_old_base_module)
-        return m;
-    return (jl_base_module==NULL) ? jl_core_module : jl_base_module;
+    while (m != jl_main_module) {
+        if (m->istopmod)
+            return m;
+        m = m->parent;
+    }
+    return jl_top_module;
 }
 
 int jl_has_intrinsics(jl_expr_t *e, jl_module_t *m)
@@ -576,7 +585,7 @@ jl_value_t *jl_parse_eval_all(const char *fname, size_t len)
 
 jl_value_t *jl_load(const char *fname)
 {
-    if (jl_current_module == jl_base_module) {
+    if (in_base_module) {
         //This deliberatly uses ios, because stdio initialization has been moved to Julia
         jl_printf(JL_STDOUT, "%s\r\n", fname);
 #ifdef _OS_WINDOWS_

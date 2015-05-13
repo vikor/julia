@@ -2,7 +2,10 @@
 
 # Support for @simd for
 
-module SimdLoop
+baremodule SimdLoop
+
+importall ..Operators
+import ..convert, ..esc, ..gensym, ..start, ..next, ..done, ..length, ..symbol
 
 export @simd, simd_outer_range, simd_inner_length, simd_index
 
